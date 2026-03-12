@@ -1,0 +1,90 @@
+# SearxNG settings for Cloud Run
+# Key changes from defaults:
+#   - secret_key must be set via SECRET_KEY env var at deploy time
+#   - JSON output format enabled (required by webfetch-mcp)
+#   - Limiter disabled (Cloud Run handles scaling, not SearxNG)
+#   - Image proxy disabled (not needed for MCP use)
+#   - Redis disabled (no sidecar available on Cloud Run)
+
+use_default_settings: true
+
+general:
+  instance_name: "webfetch-searxng"
+  privacypolicy_url: false
+  contact_url: false
+  enable_metrics: false
+
+server:
+  # MUST be overridden — set SECRET_KEY env var in Cloud Run
+  secret_key: "${SECRET_KEY}"
+  bind_address: "0.0.0.0"
+  port: 8080
+  base_url: false
+  limiter: false          # Cloud Run auto-scales; no need for SearxNG's limiter
+  image_proxy: false
+  method: "GET"
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Download-Options: noopen
+    X-Robots-Tag: noindex, nofollow
+
+ui:
+  static_use_hash: true
+  default_locale: en
+  query_in_title: false
+  infinite_scroll: false
+  center_alignment: false
+  default_theme: simple
+  results_on_new_tab: false
+
+# Enable JSON output — this is what webfetch-mcp calls
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json            # ← required by webfetch-mcp
+
+engines:
+  # Core reliable engines for MCP use
+  - name: google
+    engine: google
+    shortcut: g
+    use_mobile_ui: false
+
+  - name: bing
+    engine: bing
+    shortcut: b
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: d
+
+  - name: brave
+    engine: brave
+    shortcut: br
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: w
+
+  - name: github
+    engine: github
+    shortcut: gh
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+
+  - name: arxiv
+    engine: arxiv
+    shortcut: arxiv
+
+  - name: pubmed
+    engine: pubmed
+    shortcut: pub
+
+# Disable Redis — no persistent cache on Cloud Run
+redis:
+  url: false
