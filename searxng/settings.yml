@@ -15,8 +15,8 @@ general:
   enable_metrics: false
 
 server:
-  # MUST be overridden — set SECRET_KEY env var in Cloud Run
-  secret_key: "${SECRET_KEY}"
+  # Placeholder replaced at startup by the official entrypoint using SEARXNG_SECRET env var
+  secret_key: "ultrasecretkey"
   bind_address: "0.0.0.0"
   port: 8080
   base_url: false
