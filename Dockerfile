@@ -2,16 +2,10 @@
 # Injects SECRET_KEY at container startup so we don't bake secrets into the image.
 FROM searxng/searxng:latest
 
-# Copy our pre-configured settings
+# Copy our settings with JSON format enabled.
+# The official entrypoint substitutes the "ultrasecretkey" placeholder
+# with the value of the SEARXNG_SECRET env var at startup automatically.
+# Do NOT override ENTRYPOINT — the official one handles everything.
 COPY searxng/settings.yml /etc/searxng/settings.yml
 
-# Cloud Run sets $PORT; SearxNG reads SEARXNG_PORT
-ENV SEARXNG_PORT=8080
-ENV INSTANCE_NAME="webfetch-searxng"
-
-# Entrypoint script that substitutes SECRET_KEY before SearxNG starts
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
 EXPOSE 8080
-ENTRYPOINT ["/entrypoint.sh"]
