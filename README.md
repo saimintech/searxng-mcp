@@ -1,145 +1,79 @@
-# WebFetch MCP — Cloud Run
+# searxng-mcp
 
-Two Cloud Run services that give LiteLLM (or any MCP client) live web search and page fetching.
+A small SearxNG container configured as the search backend for `webfetch-mcp`. It is not an MCP server itself; it is the metasearch service that the MCP server's `web_search` tool calls.
+
+## How it works
 
 ```
-LiteLLM Proxy
-    └── MCP (StreamableHTTP) ──► webfetch-mcp   (Cloud Run, public)
-                                      └── HTTP ──► searxng  (Cloud Run, internal)
-                                                       └── Google, Bing, DDG, arXiv...
+webfetch-mcp (web_search tool)
+    |
+    |  GET /search?q=...&format=json
+    v
+SearxNG  (this repo: official image + custom settings.yml)
+    |
+    v
+google, bing, duckduckgo, brave, wikipedia,
+github, stackoverflow, arxiv, pubmed
 ```
 
----
+The `Dockerfile` starts from the official `searxng/searxng` image and replaces `/etc/searxng/settings.yml` with the one in this repo. The official entrypoint is left as is.
 
-## Services
+## What the settings change
 
-| Service | Image | Public? | Purpose |
-|---------|-------|---------|---------|
-| `webfetch-mcp` | Node.js 20 + JSDOM + Readability | ✅ Yes | MCP server |
-| `searxng` | Official SearxNG | 🔒 Internal only | Metasearch engine |
+`searxng/settings.yml` keeps `use_default_settings: true` and overrides:
 
-**MCP Tools exposed:**
-| Tool | Description |
-|------|-------------|
-| `web_search` | Search via SearxNG (Google, Bing, DDG, arXiv, GitHub, etc.) |
-| `web_fetch` | Fetch + extract readable text from any URL via Mozilla Readability |
+- **JSON output enabled** (`search.formats: [html, json]`). `webfetch-mcp` needs this.
+- **Limiter off**, **image proxy off**, **Redis off**, metrics off. Meant for a single container with no sidecars.
+- Listens on `0.0.0.0:8080`.
+- A short engine list: Google, Bing, DuckDuckGo, Brave, Wikipedia, GitHub, Stack Overflow, arXiv, PubMed.
+- Safe search off, default language `en`, `noindex` / `nosniff` response headers.
 
----
+`server.secret_key` in the file is SearxNG's stock placeholder. Provide the real key at runtime through the `SEARXNG_SECRET` environment variable, which SearxNG reads in place of the file value.
 
-## Prerequisites
+## Stack
 
-- Google Cloud SDK installed and authenticated (`gcloud auth login`)
-- A GCP project with billing enabled
-- `openssl` available locally (for secret generation)
+SearxNG (official Docker image), YAML config.
 
----
-
-## Deploy
+## Run locally
 
 ```bash
-chmod +x deploy.sh
-./deploy.sh YOUR_GCP_PROJECT_ID [REGION]
+docker build -t searxng-backend .
+docker run --rm -p 8888:8080 -e SEARXNG_SECRET="$(openssl rand -hex 32)" searxng-backend
 
-# Example
-./deploy.sh my-gcp-project us-central1
+# check the JSON API
+curl 'http://localhost:8888/search?q=test&format=json'
 ```
 
-The script:
-1. Enables required GCP APIs
-2. Generates a SearxNG secret key and stores it in Secret Manager
-3. Builds and deploys SearxNG (internal-only)
-4. Grants webfetch-mcp's service account invoker access to SearxNG
-5. Builds and deploys webfetch-mcp with `SEARXNG_BASE` pointed at SearxNG
-6. Prints the MCP endpoint URL
+Then start `webfetch-mcp` with `SEARXNG_BASE=http://localhost:8888`.
 
----
-
-## LiteLLM Integration
-
-Add to your `litellm_config.yaml`:
-
-```yaml
-mcp_servers:
-  - name: webfetch
-    url: https://YOUR-MCP-SERVICE.run.app/mcp
-```
-
-Or with the Python SDK:
-
-```python
-import litellm
-
-response = litellm.completion(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Search for the latest AI news"}],
-    mcp_servers=[{
-        "name": "webfetch",
-        "url": "https://YOUR-MCP-SERVICE.run.app/mcp"
-    }]
-)
-```
-
----
-
-## Cloud Run Settings
-
-### webfetch-mcp
-| Setting | Value | Reason |
-|---------|-------|--------|
-| Memory | 512Mi | JSDOM parses full HTML pages in-process |
-| CPU | 1 | Node.js is single-threaded; extra CPUs don't help much |
-| Concurrency | 10 | Each request does async I/O — safe to interleave |
-| Min instances | 1 | Keep warm — MCP clients have short connection timeouts |
-| Auth | Public | LiteLLM connects without GCP credentials |
-
-### searxng
-| Setting | Value | Reason |
-|---------|-------|--------|
-| Memory | 512Mi | Python app with multiple engine workers |
-| Concurrency | 80 | SearxNG is designed for high concurrency |
-| Min instances | 1 | Keep warm — cold start would cascade into MCP timeouts |
-| Auth | Internal only | Only webfetch-mcp can call it |
-
----
-
-## Cost Estimate
-
-Both services at min-instances=1 in us-central1:
-
-| | CPU | Memory | ~Monthly idle |
-|-|-----|--------|--------------|
-| webfetch-mcp | 1 vCPU | 512Mi | ~$8 |
-| searxng | 1 vCPU | 512Mi | ~$8 |
-| **Total** | | | **~$16/month** |
-
-Set `--min-instances=0` on both to go scale-to-zero (~$0 idle, but expect 5–8s cold starts).
-
----
-
-## Testing
+## Deploy to Cloud Run (example)
 
 ```bash
-# Health check
-curl https://YOUR-MCP-URL.run.app/health
-
-# The MCP endpoint speaks StreamableHTTP — test with any MCP client
-# or via LiteLLM as shown above
+gcloud run deploy searxng \
+  --source . \
+  --region <region> \
+  --set-env-vars SEARXNG_SECRET=<generated-secret> \
+  --ingress internal
 ```
 
----
+Prefer a secret manager over a plain env var for the key. With the limiter turned off and no auth, this instance should not be exposed to the public internet; keep it on a private network or behind ingress restrictions that still let `webfetch-mcp` reach it.
 
-## File Structure
+## Files
 
-```
-.
-├── deploy.sh                     ← run this
-├── webfetch-mcp-cloudrun/
-│   ├── server-http.mjs           ← HTTP MCP server (StreamableHTTP transport)
-│   ├── Dockerfile
-│   └── package.json
-└── searxng-cloudrun/
-    ├── Dockerfile
-    ├── entrypoint.sh             ← injects SECRET_KEY at runtime
-    └── searxng/
-        └── settings.yml          ← JSON output enabled, limiter off
-```
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Official SearxNG image plus the custom settings file |
+| `searxng/settings.yml` | SearxNG configuration described above |
+| `entrypoint.sh` | Older startup script that substituted a `SECRET_KEY` value into the settings file. The current `Dockerfile` does not copy or use it. |
+
+## Configuration
+
+| Variable | Purpose |
+|----------|---------|
+| `SEARXNG_SECRET` | SearxNG secret key (required; generate with `openssl rand -hex 32`) |
+
+Other SearxNG options are set in `searxng/settings.yml`. The base image tag is `latest`; pin a version if you need reproducible builds.
+
+## Author
+
+Built by Saim Safdar - https://saim.me
